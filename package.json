@@ -55,13 +55,14 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/highlight.js": "^10.1.0",
     "@types/marked": "^5.0.1",
     "@types/node": "^20.0.0",
     "@types/node-fetch": "^2.6.4",
     "@types/vscode": "^1.80.0",
     "@vscode/test-electron": "^2.3.4",
-    "typescript": "^5.2.0",
-    "@types/highlight.js": "^10.1.0"
+    "@vscode/vsce": "^3.7.1",
+    "typescript": "^5.2.0"
   },
   "dependencies": {
     "highlight.js": "^11.8.0",
