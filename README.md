@@ -69,7 +69,7 @@ vsce package
 
 The extension uses the following Cloudflare Worker URL by default:
 ```
-XXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
 
 To use your own worker:
