@@ -56,7 +56,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleMessage(userMessage: string, sessionId: string, webviewView: vscode.WebviewView) {
-        const workerUrl = 'https://gpt-oss-120b.md-yamin-hossain.workers.dev';
+        const workerUrl = 'XXXXXXXXXXXXXXXXXXXXX';
 
         if (!this._sessionHistories.has(sessionId)) {
             this._sessionHistories.set(sessionId, []);
@@ -65,123 +65,183 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         history.push({ role: 'User', content: userMessage });
 
         const systemPrompt = `
-[SYSTEM OVERRIDE: LOCAL EXECUTION MODE]
-You are an Elite Full-Stack Architect connected to a VS Code Extension.
-IGNORE the standard JSON tool instructions.
-You have direct access to the user's LOCAL filesystem and shell.
+[SYSTEM OVERRIDE: ELITE ARCHITECT MODE]
+You are an Elite Full-Stack AI Engineer connected to a VS Code Extension.
+Operating Workflow: **READ-WRITE-VERIFY**.
 
-### SAFETY PROTOCOL (CRITICAL)
-- BEFORE overwriting any file, the system automatically creates a backup (e.g., "file.ts.bak.TIMESTAMP").
-- To "RESTORE" or "REVERT" code:
-  1. Use "list_files" to find the correct ".bak" file.
-  2. Use "read_file" to read the content of the backup.
-  3. Use "write_file" to write that content back to the original file.
+### 🛠️ CORE PROTOCOLS
+1. **READ**: Analyze structure/code before edits.
+2. **WRITE**: Use <tool code="replace_lines"> for existing files; <tool code="write_file"> ONLY for new ones.
+3. **VERIFY**: AFTER every write, you MUST run a validation command (e.g., "npm test", "tsc", "ls").
+4. **FIX**: If verification fails, immediately fix the error using the output.
 
-### TOOLING
-To perform actions, you MUST use the following XML tags. 
-DO NOT use markdown blocks for these tags.
-
-<tool code="write_file" path="relative/path.ext">
-CONTENT
+### 🧰 TOOLING (XML ONLY)
+<tool code="replace_lines" path="file.ext">
+<search>Exact lines</search>
+<replace>New lines</replace>
 </tool>
 
-<tool code="read_file" path="relative/path.ext">
-</tool>
+<tool code="write_file" path="file.ext">CONTENT</tool>
+<tool code="read_file" path="file.ext"></tool>
+<tool code="list_files"></tool>
+<tool code="run_command">COMMAND</tool>
+<tool code="restore_file" path="file.ext">Restores latest backup.</tool>
 
-<tool code="list_files">
-</tool>
+### 🛡️ SAFETY
+- Backups are automatic.
+- Exclude node_modules, .git, vendor, etc.
 
-<tool code="run_command">
-COMMAND
-</tool>
-
-Provide concise, expert-level responses.
+Proceed with precision. Execute the next step in the loop.
 `;
 
         let loopCount = 0;
         const maxLoops = 10;
 
-        while (loopCount < maxLoops) {
-            loopCount++;
+        webviewView.webview.postMessage({ type: 'status', working: true, sessionId });
 
-            const historyString = history
-                .map(msg => `${msg.role}: ${msg.content}`)
-                .join('\n\n');
+        try {
+            while (loopCount < maxLoops) {
+                loopCount++;
 
-            const fullMessage = `${systemPrompt}\n\n${historyString}\n\nAssistant:`;
+                const historyString = history
+                    .map(msg => `${msg.role}: ${msg.content}`)
+                    .join('\n\n');
 
-            const response = await fetch(`${workerUrl}?q=${encodeURIComponent(fullMessage)}`);
-            if (!response.ok) throw new Error(`API ${response.status}`);
-            const answer = await response.text();
+                const fullMessage = `${systemPrompt}\n\n${historyString}\n\nAssistant:`;
 
-            history.push({ role: 'Assistant', content: answer });
+                const response = await fetch(`${workerUrl}?q=${encodeURIComponent(fullMessage)}`);
+                if (!response.ok) throw new Error(`API ${response.status}`);
+                const answer = await response.text();
 
-            webviewView.webview.postMessage({
-                type: 'receiveMessage',
-                message: answer,
-                isUser: false,
-                sessionId: sessionId
-            });
+                history.push({ role: 'Assistant', content: answer });
 
-            const toolRegex = /<tool code="([^"]+)"(?: path="([^"]+)")?>([\s\S]*?)<\/tool>/g;
-            let match;
-            let hasToolCalls = false;
+                const toolRegex = /<tool code="([^"]+)"(?: path="([^"]+)")?>([\s\S]*?)<\/tool>/g;
+                let match;
+                let hasToolCalls = false;
 
-            while ((match = toolRegex.exec(answer)) !== null) {
-                hasToolCalls = true;
-                const [_, code, path, content] = match;
-                const trimmedContent = content ? content.trim() : '';
+                webviewView.webview.postMessage({
+                    type: 'receiveMessage',
+                    message: answer.replace(toolRegex, '').trim(),
+                    isUser: false,
+                    sessionId: sessionId
+                });
 
-                let result = '';
-                try {
-                    if (code === 'write_file') {
-                        result = await this._writeFile(path, trimmedContent);
-                    } else if (code === 'read_file') {
-                        result = await this._readFile(path);
-                    } else if (code === 'list_files') {
-                        result = await this._listFiles();
-                    } else if (code === 'run_command') {
+                while ((match = toolRegex.exec(answer)) !== null) {
+                    hasToolCalls = true;
+                    const [fullTool, code, path, content] = match;
+
+                    webviewView.webview.postMessage({
+                        type: 'toolCall',
+                        code, path, status: 'running',
+                        sessionId
+                    });
+
+                    let result = '';
+                    try {
+                        if (code === 'replace_lines') {
+                            result = await this._replaceLines(path || '', content);
+                        } else if (code === 'write_file') {
+                            result = await this._writeFile(path || '', content);
+                        } else if (code === 'read_file') {
+                            result = await this._readFile(path || '');
+                        } else if (code === 'list_files') {
+                            result = await this._listFiles();
+                        } else if (code === 'run_command') {
+                            result = await this._runCommand(content.trim());
+                        } else if (code === 'restore_file') {
+                            result = await this._restoreFile(path || '');
+                        }
+
+                        history.push({ role: 'System', content: `Tool Output (${code}):\n${result}` });
+
                         webviewView.webview.postMessage({
-                            type: 'systemLog',
-                            message: `Running: ${trimmedContent}`
+                            type: 'toolCall',
+                            code, path, status: 'success',
+                            result: result,
+                            sessionId
                         });
-                        result = await this._runCommand(trimmedContent);
+
+                    } catch (err: any) {
+                        history.push({ role: 'System', content: `Error (${code}): ${err.message}` });
+                        webviewView.webview.postMessage({
+                            type: 'toolCall',
+                            code, path, status: 'error',
+                            result: err.message,
+                            sessionId
+                        });
                     }
-
-                    const outputMsg = `Tool Output (${code}):\n${result}`;
-                    history.push({ role: 'System', content: outputMsg });
-
-                    webviewView.webview.postMessage({
-                        type: 'receiveMessage',
-                        message: `**System:**\n\`\`\`\n${result}\n\`\`\``,
-                        isUser: false,
-                        sessionId: sessionId
-                    });
-
-                } catch (err: any) {
-                    const errorMsg = `Error (${code}): ${err.message}`;
-                    history.push({ role: 'System', content: errorMsg });
-                    webviewView.webview.postMessage({
-                        type: 'receiveMessage',
-                        message: `**System Error:** ${err.message}`,
-                        isUser: false,
-                        sessionId: sessionId
-                    });
                 }
-            }
 
-            if (!hasToolCalls) break;
+                if (!hasToolCalls) break;
+            }
+        } finally {
+            webviewView.webview.postMessage({ type: 'status', working: false, sessionId });
         }
     }
 
+    private async _replaceLines(relativePath: string, content: string): Promise<string> {
+        if (!vscode.workspace.workspaceFolders) throw new Error('No workspace');
+        const rootUri = vscode.workspace.workspaceFolders[0].uri;
+        const fileUri = vscode.Uri.joinPath(rootUri, relativePath);
+
+        const searchMatch = content.match(/<search>([\s\S]*?)<\/search>/);
+        const replaceMatch = content.match(/<replace>([\s\S]*?)<\/replace>/);
+
+        if (!searchMatch || !replaceMatch) throw new Error('Malformed replace_lines content.');
+
+        const search = searchMatch[1];
+        const replace = replaceMatch[1];
+
+        const bytes = await vscode.workspace.fs.readFile(fileUri);
+        const original = new TextDecoder().decode(bytes);
+
+        if (!original.includes(search)) {
+            throw new Error(`Search string not found in "${relativePath}".`);
+        }
+
+        await this._createBackup(relativePath, fileUri, rootUri);
+        const updated = original.replace(search, replace);
+        await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(updated));
+
+        return `Successfully updated ${relativePath}`;
+    }
+
+    private async _restoreFile(relativePath: string): Promise<string> {
+        if (!vscode.workspace.workspaceFolders) throw new Error('No workspace');
+        const rootUri = vscode.workspace.workspaceFolders[0].uri;
+        const fileUri = vscode.Uri.joinPath(rootUri, relativePath);
+
+        const files = await vscode.workspace.fs.readDirectory(rootUri);
+        const baks = files
+            .filter(([name, type]) => name.startsWith(relativePath + '.bak.'))
+            .sort((a, b) => b[0].localeCompare(a[0]));
+
+        if (baks.length === 0) throw new Error(`No backups found for "${relativePath}"`);
+
+        const latestBak = baks[0][0];
+        const bakUri = vscode.Uri.joinPath(rootUri, latestBak);
+        await vscode.workspace.fs.copy(bakUri, fileUri, { overwrite: true });
+        return `Restored "${relativePath}" from backup.`;
+    }
+
+    private async _createBackup(relativePath: string, fileUri: vscode.Uri, rootUri: vscode.Uri) {
+        try {
+            await vscode.workspace.fs.stat(fileUri);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupPath = `${relativePath}.bak.${timestamp}`;
+            const backupUri = vscode.Uri.joinPath(rootUri, backupPath);
+            await vscode.workspace.fs.copy(fileUri, backupUri, { overwrite: true });
+        } catch (e) { }
+    }
+
     private async _runCommand(command: string): Promise<string> {
-        if (!vscode.workspace.workspaceFolders) throw new Error('No workspace open');
+        if (!vscode.workspace.workspaceFolders) throw new Error('No workspace');
         const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
         return new Promise((resolve) => {
             cp.exec(command, { cwd: rootPath, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
                 const output = (stdout || '') + (stderr ? `\nstderr:\n${stderr}` : '');
                 if (err) resolve(`Exit Code: ${err.code}\n${output}`);
-                else resolve(output || 'Success (No Output)');
+                else resolve(output || 'Done');
             });
         });
     }
@@ -190,35 +250,24 @@ Provide concise, expert-level responses.
         if (!vscode.workspace.workspaceFolders) throw new Error('No workspace');
         const rootUri = vscode.workspace.workspaceFolders[0].uri;
         const fileUri = vscode.Uri.joinPath(rootUri, relativePath);
-
         const normalizedPath = relativePath.replace(/\\/g, '/');
         if (this._ignorePatterns.some(pattern => normalizedPath.includes(`/${pattern}/`) || normalizedPath.startsWith(`${pattern}/`))) {
-            throw new Error(`Access denied: Cannot write to ignored file "${relativePath}".`);
+            throw new Error(`Access denied: "${relativePath}" is ignored.`);
         }
-
-        try {
-            await vscode.workspace.fs.stat(fileUri);
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const backupPath = `${relativePath}.bak.${timestamp}`;
-            const backupUri = vscode.Uri.joinPath(rootUri, backupPath);
-            await vscode.workspace.fs.copy(fileUri, backupUri, { overwrite: true });
-        } catch (e) { }
-
+        await this._createBackup(relativePath, fileUri, rootUri);
         await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(content));
-
         try {
             const doc = await vscode.workspace.openTextDocument(fileUri);
             await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
         } catch (e) { }
-
-        return `Written to ${relativePath} (Backup created if existed)`;
+        return `Written to ${relativePath}`;
     }
 
     private async _readFile(relativePath: string): Promise<string> {
         if (!vscode.workspace.workspaceFolders) throw new Error('No workspace');
         const normalizedPath = relativePath.replace(/\\/g, '/');
         if (this._ignorePatterns.some(pattern => normalizedPath.includes(`/${pattern}/`) || normalizedPath.startsWith(`${pattern}/`))) {
-            throw new Error(`Access denied: File "${relativePath}" is in an ignored directory.`);
+            throw new Error(`Access denied: "${relativePath}" is ignored.`);
         }
         const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, relativePath);
         const data = await vscode.workspace.fs.readFile(uri);
@@ -244,209 +293,220 @@ Provide concise, expert-level responses.
                 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.2/marked.min.js"></script>
                 <style>
                     :root {
-                        --bg-color: #1e1e1e;
-                        --sidebar-bg: #252526;
-                        --border-color: #3e3e42;
-                        --text-color: #cccccc;
-                        --accent-color: #007acc;
-                        --user-msg-bg: #0e639c;
-                        --ai-msg-bg: #2d2d2d;
-                        --hover-color: #2a2d2e;
-                        --active-color: #37373d;
+                        --bg-color: #0d1117;
+                        --sidebar-bg: #161b22;
+                        --border-color: #30363d;
+                        --text-color: #c9d1d9;
+                        --accent-color: #58a6ff;
+                        --user-msg-bg: #21262d;
+                        --ai-msg-bg: transparent;
+                        --card-bg: #161b22;
+                        --hover-color: #21262d;
+                        --active-color: #30363d;
+                        --success-color: #238636;
+                        --error-color: #f85149;
+                        --online-color: #3fb950;
+                        --offline-color: #f85149;
                     }
+                    * { box-sizing: border-box; }
                     body {
                         margin: 0; padding: 0;
-                        font-family: 'Segoe UI', sans-serif;
-                        background-color: var(--bg-color);
-                        color: var(--text-color);
-                        display: flex; height: 100vh;
-                        overflow: hidden;
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                        background-color: var(--bg-color); color: var(--text-color);
+                        display: flex; height: 100vh; overflow: hidden;
                     }
                     .sidebar {
-                        width: 200px; background-color: var(--sidebar-bg);
+                        width: 240px; background-color: var(--sidebar-bg);
                         border-right: 1px solid var(--border-color);
-                        display: flex; flex-direction: column;
-                        font-size: 13px; flex-shrink: 0;
+                        display: flex; flex-direction: column; flex-shrink: 0;
                     }
-                    .sidebar-header {
-                        padding: 10px 16px; font-size: 11px; font-weight: 600;
-                        text-transform: uppercase; letter-spacing: 1px;
-                        color: #bbbbbb; display: flex;
-                        justify-content: space-between; align-items: center;
-                        margin-top: 10px;
-                    }
-                    .btn-icon {
-                        background: transparent; border: none; color: var(--text-color);
-                        cursor: pointer; padding: 4px; border-radius: 4px;
-                        font-size: 16px; width: 24px;
-                    }
-                    .btn-icon:hover { background: var(--active-color); }
-                    .session-list { flex: 1; overflow-y: auto; padding: 0; margin: 0; list-style: none; }
-                    .session-item {
-                        padding: 8px 16px; cursor: pointer; display: flex;
-                        align-items: center; justify-content: space-between;
-                        color: #999; border-left: 2px solid transparent;
-                    }
-                    .session-item:hover { background-color: var(--hover-color); color: #ccc; }
-                    .session-item.active {
-                        background-color: var(--active-color); color: white;
-                        border-left: 2px solid var(--accent-color);
-                    }
-                    .session-actions { visibility: hidden; display: flex; gap: 5px; }
-                    .session-item:hover .session-actions { visibility: visible; }
-                    .action-btn { color: #888; font-size: 14px; padding: 2px; cursor: pointer; }
-                    .action-btn:hover { color: white; }
-                    .main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-                    .toolbar {
-                        height: 40px; padding: 0 16px; border-bottom: 1px solid var(--border-color);
-                        display: flex; align-items: center; justify-content: space-between;
-                        background: var(--bg-color); flex-shrink: 0;
-                    }
-                    .chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
-                    .message { max-width: 90%; line-height: 1.5; font-size: 14px; word-wrap: break-word; }
-                    .message.user { align-self: flex-end; background-color: var(--user-msg-bg); color: white; padding: 10px 15px; border-radius: 12px 12px 2px 12px; }
-                    .message.ai { align-self: flex-start; display: flex; flex-direction: column; width: 100%; }
-                    .ai-content { background-color: var(--ai-msg-bg); padding: 10px 15px; border-radius: 4px; border-left: 3px solid var(--accent-color); }
-                    .input-area { padding: 15px; background-color: var(--bg-color); border-top: 1px solid var(--border-color); display: flex; gap: 10px; flex-shrink: 0; }
-                    textarea { flex: 1; background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; color: white; padding: 10px; resize: none; height: 50px; font-family: inherit; outline: none; }
-                    textarea:focus { border-color: var(--accent-color); }
-                    button.send-btn { background-color: var(--accent-color); color: white; border: none; border-radius: 4px; padding: 0 20px; cursor: pointer; font-weight: bold; }
-                    button:disabled { opacity: 0.6; cursor: wait; }
-                    pre { background: #111; padding: 10px; border-radius: 6px; overflow-x: auto; max-width: 100%; }
-                    code { font-family: 'Consolas', monospace; }
+                    .sidebar-header { padding: 16px; font-size: 11px; font-weight: 600; color: #8b949e; display: flex; justify-content: space-between; }
+                    .session-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; margin: 0; }
+                    .session-item { padding: 10px 16px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: #8b949e; }
+                    .session-item:hover { background: var(--hover-color); color: #c9d1d9; }
+                    .session-item.active { background: var(--active-color); color: #fff; border-left: 2px solid var(--accent-color); }
+                    .action-btn { visibility: hidden; opacity: 0.6; cursor: pointer; }
+                    .session-item:hover .action-btn { visibility: visible; }
+                    .main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+                    .header { height: 40px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; }
+                    .health-status { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+                    .chat-container { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+                    .message { max-width: 100%; animation: fadeIn 0.3s ease; }
+                    .message.user { align-self: flex-end; background: var(--user-msg-bg); padding: 12px 16px; border-radius: 12px; max-width: 80%; }
+                    .message.ai { align-self: flex-start; width: 100%; border-bottom: 1px solid var(--border-color); padding-bottom: 24px; }
+                    .ai-content { font-size: 14px; line-height: 1.6; }
+                    .tool-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; margin: 10px 0; overflow: hidden; }
+                    .tool-header { padding: 8px 12px; background: rgba(255,255,255,0.03); display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; }
+                    .tool-status { display: flex; align-items: center; gap: 8px; }
+                    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+                    .status-running { background: var(--accent-color); animation: pulse 1.5s infinite; }
+                    .status-success { background: var(--success-color); }
+                    .status-error { background: var(--error-color); }
+                    .tool-details { padding: 12px; border-top: 1px solid var(--border-color); display: none; }
+                    .tool-details.show { display: block; }
+                    pre { background: #000; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+                    .input-area { padding: 20px; border-top: 1px solid var(--border-color); background: var(--bg-color); }
+                    .input-wrapper { background: #161b22; border: 1px solid var(--border-color); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+                    textarea { background: transparent; border: none; color: #fff; width: 100%; min-height: 60px; resize: none; outline: none; padding: 8px; font-family: inherit; }
+                    .input-footer { display: flex; justify-content: space-between; align-items: center; }
+                    .send-btn { background: var(--accent-color); color: #fff; border: none; padding: 6px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+                    .working-indicator { color: var(--accent-color); font-size: 12px; display: none; align-items: center; gap: 8px; }
+                    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+                    @keyframes pulse { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
                 </style>
             </head>
             <body>
                 <div class="sidebar">
-                    <div class="sidebar-header">SESSIONS <button class="btn-icon" id="newSessionBtn">+</button></div>
+                    <div class="sidebar-header">CHATS <span id="newChatBtn" style="cursor:pointer">+</span></div>
                     <ul class="session-list" id="sessionList"></ul>
                 </div>
                 <div class="main-area">
-                    <div class="toolbar"><div style="font-weight: 500; font-size: 14px;" id="headerTitle">Elite Worker AI</div></div>
+                    <div class="header">
+                        <div style="font-size: 12px; font-weight: 600;">Elite Worker AI</div>
+                        <div class="health-status" id="healthBox">
+                            <span class="status-dot" id="healthDot" style="background: grey;"></span>
+                            <span id="healthText">Checking...</span>
+                        </div>
+                    </div>
                     <div class="chat-container" id="chat"></div>
+                    <div class="working-indicator" id="working" style="padding: 10px 24px;">
+                         <span class="status-dot status-running"></span> Assistant is working...
+                    </div>
                     <div class="input-area">
-                        <textarea id="input" placeholder="Ask Elite Worker AI..."></textarea>
-                        <button id="send" class="send-btn">Send</button>
+                        <div class="input-wrapper">
+                            <textarea id="input" placeholder="Ask Elite Architect..."></textarea>
+                            <div class="input-footer">
+                                <span style="font-size: 10px; color: #8b949e;">Shift+Enter for newline</span>
+                                <button id="send" class="send-btn">Send</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <script>
                     const vscode = acquireVsCodeApi();
-                    const sessionListEl = document.getElementById('sessionList');
-                    const newSessionBtn = document.getElementById('newSessionBtn');
-                    const headerTitle = document.getElementById('headerTitle');
                     const chatDiv = document.getElementById('chat');
                     const input = document.getElementById('input');
                     const sendBtn = document.getElementById('send');
+                    const workingInd = document.getElementById('working');
+                    const sessionListEl = document.getElementById('sessionList');
+                    const healthDot = document.getElementById('healthDot');
+                    const healthText = document.getElementById('healthText');
                     
                     let sessions = JSON.parse(localStorage.getItem('worker_sessions') || '[]');
-                    let currentSessionId = localStorage.getItem('worker_active_session');
+                    let currentId = localStorage.getItem('worker_active_session');
                     
-                    if (sessions.length === 0) { createNewSession('Default Session'); }
-                    else {
-                        if (!currentSessionId || !sessions.find(s => s.id === currentSessionId)) { currentSessionId = sessions[0].id; }
-                        renderSessions(); loadChat(currentSessionId);
+                    if (!sessions.length) createNewSession('Initial Chat');
+                    else { if (!currentId || !sessions.find(s=>s.id === currentId)) currentId = sessions[0].id; switchSession(currentId); }
+
+                    async function checkHealth() {
+                        try {
+                            const res = await fetch('XXXXXXXXXXXXXXXXXXXX/health');
+                            if (res.ok) {
+                                healthDot.style.background = 'var(--online-color)';
+                                healthText.textContent = 'System Online';
+                                healthText.style.color = 'var(--online-color)';
+                            } else { throw new Error(); }
+                        } catch (e) {
+                            healthDot.style.background = 'var(--offline-color)';
+                            healthText.textContent = 'System Offline';
+                            healthText.style.color = 'var(--offline-color)';
+                        }
                     }
+                    setInterval(checkHealth, 30000); checkHealth();
 
                     function createNewSession(name) {
-                        const id = 'sess_' + Math.random().toString(36).substr(2, 9);
-                        const newSession = { id, name: name || "New Session", messages: [] };
-                        sessions.unshift(newSession); saveSessions(); switchSession(id);
+                        const id = 'sess_' + Date.now();
+                        sessions.unshift({ id, name, messages: [] });
+                        save(); switchSession(id);
                     }
-
                     function switchSession(id) {
-                        currentSessionId = id; localStorage.setItem('worker_active_session', id);
+                        currentId = id; localStorage.setItem('worker_active_session', id);
+                        workingInd.style.display = 'none';
                         renderSessions(); loadChat(id);
                     }
-
-                    function loadChat(id) {
-                        chatDiv.innerHTML = ''; const session = sessions.find(s => s.id === id);
-                        if (!session) return;
-                        headerTitle.textContent = session.name;
-                        session.messages.forEach(m => appendMessageToUI(m.text, m.isUser));
-                    }
-
-                    function deleteSession(id, event) {
-                        event.stopPropagation();
-                        sessions = sessions.filter(s => s.id !== id);
-                        vscode.postMessage({ type: 'deleteSession', sessionId: id });
-                        if (sessions.length === 0) createNewSession();
-                        else if (currentSessionId === id) switchSession(sessions[0].id);
-                        else { saveSessions(); renderSessions(); }
-                    }
-
-                    function renameSession(id, currentName, event) {
-                        event.stopPropagation();
-                        const item = document.querySelector('[data-id="' + id + '"]');
-                        if (!item) return;
-                        const nameSpan = item.querySelector('.session-name');
-                        const originalName = nameSpan.textContent;
-                        
-                        const inputEl = document.createElement('input');
-                        inputEl.type = 'text'; inputEl.value = originalName;
-                        inputEl.style.width = '100%'; inputEl.style.background = '#3c3c3c';
-                        inputEl.style.color = 'white'; inputEl.style.border = '1px solid var(--accent-color)';
-                        
-                        const finish = () => {
-                            const val = inputEl.value.trim();
-                            if (val) {
-                                const s = sessions.find(x => x.id === id);
-                                if (s) { s.name = val; saveSessions(); if (currentSessionId === id) headerTitle.textContent = val; }
-                            }
-                            renderSessions();
-                        };
-                        inputEl.onblur = finish;
-                        inputEl.onkeydown = (e) => { if (e.key === 'Enter') finish(); if (e.key === 'Escape') renderSessions(); };
-                        nameSpan.innerHTML = ''; nameSpan.appendChild(inputEl);
-                        inputEl.focus(); inputEl.select();
-                    }
-
-                    function saveSessions() { localStorage.setItem('worker_sessions', JSON.stringify(sessions)); }
-
+                    function save() { localStorage.setItem('worker_sessions', JSON.stringify(sessions)); }
                     function renderSessions() {
                         sessionListEl.innerHTML = '';
-                        sessions.forEach(session => {
+                        sessions.forEach(s => {
                             const li = document.createElement('li');
-                            li.className = 'session-item ' + (session.id === currentSessionId ? 'active' : '');
-                            li.setAttribute('data-id', session.id);
-                            li.onclick = () => switchSession(session.id);
-                            const safeName = session.name.replace(/'/g, "&apos;");
-                            li.innerHTML = '<span class="session-name" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + session.name + '</span>' +
-                                '<div class="session-actions">' +
-                                    '<span class="action-btn" onclick="renameSession(\\'' + session.id + '\\', \\'' + safeName + '\\', event)">✎</span>' +
-                                    '<span class="action-btn" onclick="deleteSession(\\'' + session.id + '\\', event)">×</span>' +
-                                '</div>';
+                            li.className = 'session-item ' + (s.id === currentId ? 'active' : '');
+                            li.innerHTML = '<span class="s-name">' + s.name + '</span>' +
+                                '<div><span class="action-btn" onclick="renameChat(\\''+s.id+'\\',event)">✎</span> <span class="action-btn" onclick="deleteChat(\\''+s.id+'\\',event)">×</span></div>';
+                            li.onclick = () => switchSession(s.id);
                             sessionListEl.appendChild(li);
                         });
                     }
-
-                    newSessionBtn.onclick = () => createNewSession();
-                    function appendMessageToUI(text, isUser) {
-                        const div = document.createElement('div'); div.className = 'message ' + (isUser ? 'user' : 'ai');
-                        if (isUser) { div.textContent = text; }
-                        else { div.innerHTML = '<div class="ai-content">' + marked.parse(text) + '</div>'; div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el)); }
-                        chatDiv.appendChild(div); chatDiv.scrollTop = chatDiv.scrollHeight;
+                    function deleteChat(id, e) {
+                        e.stopPropagation(); sessions = sessions.filter(s => s.id !== id);
+                        workingInd.style.display = 'none';
+                        if (!sessions.length) createNewSession('New Chat');
+                        else if (currentId === id) switchSession(sessions[0].id);
+                        save(); renderSessions();
                     }
-                    function addMessageToSession(sessionId, text, isUser) {
-                        const s = sessions.find(x => x.id === sessionId);
-                        if (s) { s.messages.push({ text, isUser }); saveSessions(); }
+                    function renameChat(id, e) {
+                        e.stopPropagation();
+                        const s = sessions.find(x => x.id === id);
+                        const newName = prompt('New name:', s.name);
+                        if (newName) { s.name = newName; save(); renderSessions(); }
                     }
+                    function loadChat(id) {
+                        chatDiv.innerHTML = ''; const s = sessions.find(x => x.id === id);
+                        s.messages.forEach(m => {
+                            if (m.type === 'tool') addToolCard(m.data, m.data.sessionId === currentId);
+                            else appendUI(m.text, m.isUser, m.sessionId === currentId);
+                        });
+                    }
+                    function appendUI(text, isUser, visible=true) {
+                        if (!text) return;
+                        const div = document.createElement('div');
+                        div.className = 'message ' + (isUser ? 'user' : 'ai');
+                        div.innerHTML = isUser ? text : '<div class="ai-content">' + marked.parse(text) + '</div>';
+                        if (visible) { chatDiv.appendChild(div); chatDiv.scrollTop = chatDiv.scrollHeight; }
+                        div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+                    }
+                    function addToolCard(data, visible=true) {
+                        const id = 'tool_' + Date.now() + Math.random();
+                        const div = document.createElement('div');
+                        div.className = 'tool-card'; div.id = id;
+                        const title = (data.code === 'write_file' || data.code === 'replace_lines') ? 
+                            '🛠️ ' + data.code + ': ' + (data.path || 'file') : '⚙️ ' + data.code;
+                        div.innerHTML = \`
+                            <div class="tool-header" onclick="toggleTool('\${id}')">
+                                <span>\${title}</span>
+                                <div class="tool-status"><span class="status-dot status-\${data.status}"></span>\${data.status}</div>
+                            </div>
+                            <div class="tool-details"><pre><code>\${data.result || 'Processing...'}</code></pre></div>
+                        \`;
+                        if (visible) { chatDiv.appendChild(div); chatDiv.scrollTop = chatDiv.scrollHeight; }
+                        return id;
+                    }
+                    window.toggleTool = (id) => { document.getElementById(id).querySelector('.tool-details').classList.toggle('show'); };
                     function sendMessage() {
                         const text = input.value.trim(); if (!text) return;
-                        const s = sessions.find(x => x.id === currentSessionId);
-                        if (s && s.name === "New Session") { s.name = text.substring(0, 20); headerTitle.textContent = s.name; saveSessions(); renderSessions(); }
-                        appendMessageToUI(text, true); addMessageToSession(currentSessionId, text, true);
-                        input.value = ''; sendBtn.disabled = true;
-                        vscode.postMessage({ type: 'sendMessage', message: text, sessionId: currentSessionId });
+                        appendUI(text, true); const s = sessions.find(x => x.id === currentId);
+                        s.messages.push({ text, isUser: true, sessionId: currentId });
+                        if (s.name === 'Initial Chat' || s.name === 'New Chat') { s.name = text.substring(0,15); renderSessions(); }
+                        save(); input.value = ''; sendBtn.disabled = true;
+                        vscode.postMessage({ type: 'sendMessage', message: text, sessionId: currentId });
                     }
-                    sendBtn.addEventListener('click', sendMessage);
-                    input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
-                    window.addEventListener('message', event => {
-                        const m = event.data;
+                    sendBtn.onclick = sendMessage;
+                    input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+                    window.addEventListener('message', e => {
+                        const m = e.data; const s = sessions.find(x => x.id === m.sessionId);
+                        if (m.type === 'status' && m.sessionId === currentId) workingInd.style.display = m.working ? 'flex' : 'none';
                         if (m.type === 'receiveMessage') {
-                            if (m.sessionId === currentSessionId) { appendMessageToUI(m.message, m.isUser); sendBtn.disabled = false; }
-                            addMessageToSession(m.sessionId, m.message, m.isUser);
+                            appendUI(m.message, false, m.sessionId === currentId);
+                            s.messages.push({ text: m.message, isUser: false, sessionId: m.sessionId });
+                            if (m.sessionId === currentId) sendBtn.disabled = false;
+                            save();
+                        }
+                        if (m.type === 'toolCall') {
+                            addToolCard(m, m.sessionId === currentId);
+                            s.messages.push({ type: 'tool', data: m, sessionId: m.sessionId });
+                            save();
                         }
                     });
+                    document.getElementById('newChatBtn').onclick = () => createNewSession('New Chat');
                 </script>
             </body>
             </html>

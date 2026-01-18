@@ -69,7 +69,7 @@ vsce package
 
 The extension uses the following Cloudflare Worker URL by default:
 ```
-https://gpt-oss-120b.md-yamin-hossain.workers.dev
+XXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
 
 To use your own worker:
@@ -104,3 +104,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 If you encounter any issues or have questions:
 1. Open an issue on GitHub
 2. Contact the developer at [needyamin@gmail.com]
+
+
+## WORKER_URL = "XXXXXXXXXXXXXXXX"; // Replace with your deployed worker URL
